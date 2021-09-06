@@ -1,20 +1,23 @@
-// Connect the Pin_3 of DSM501A to Arduino 5V
-// Connect the Pin_5 of DSM501A to Arduino GND
-// Connect the Pin_2 of DSM501A to Arduino D8
-// www.elecrow.com
-#include <string.h>
+#include<string.h>
 #include <WiFi.h>
 #include <FirebaseESP32.h>
 #include <NTPtimeESP.h>
 #include <Arduino.h>
 #include <Nokia_5110.h>
 
+#include "DHTesp.h" 
+#include <Ticker.h>
+
+#ifndef ESP32
+#pragma message
+#error Select ESP32 board.
+#endif
+
 #define DEBUG_ON
 #define LENG 31  //0x42 + 31 bytes equal to 32 bytes
 unsigned char buf[LENG];
-NTPtime NTPch("ch.pool.ntp.org");   // Choose server pool as required
-
-//nokia5110
+NTPtime NTPch("ch.pool.ntp.org");   // Choose server pool as required  get the time from the Internet.
+//khai bao chan LCD 
 #define RST 4
 #define CE 32
 #define DC 21
@@ -23,10 +26,22 @@ NTPtime NTPch("ch.pool.ntp.org");   // Choose server pool as required
 
 Nokia_5110 lcd = Nokia_5110(RST, CE, DC, DIN, CLK);
 
-#define WIFI_SSID "FPT Telecom-6A5A"
-#define WIFI_PASSWORD "dobietday"
-#define FIREBASE_HOST "environment-2abbb-default-rtdb.firebaseio.com/"
-#define FIREBASE_AUTH "R4JGdaL0zz0mxdJ8qEBkTfRMXCJeTqiRi5BwYQiz"
+DHTesp dht;
+bool getTemperature();
+ComfortState cf;
+
+int dhtPin = 34;
+//khoi tao  ID ,pass wifi
+#define WIFI_SSID "Lêk Xù"
+#define WIFI_PASSWORD "20141582"
+
+//chi den dia chi firebase
+#define FIREBASE_HOST "enviroment-64adc-default-rtdb.firebaseio.com"
+
+/** The database secret is obsoleted, please use other authentication methods, 
+ * see examples in the Authentications folder. 
+*/
+#define FIREBASE_AUTH "r7ojs5Wzdud2WpvLdo8BJBDqLB2YEOdL58iAeHpY"
 //Define FirebaseESP32 data object
 FirebaseData fbdo;
 
@@ -34,8 +49,8 @@ FirebaseJson json;
 
 strDateTime dateTime;
 
+
 byte buff[2];
-int pin = 23;//DSM501A input D8
 unsigned long duration;
 unsigned long starttime;
 unsigned long endtime;
@@ -56,7 +71,6 @@ int count_dust = 0;
 int check_update=0;
 int check_time;
 int check_up_data_PMSA003 = 0;
-int check_up_data_DSM501A = 0;
 String h, m, s, d, month, y;
 String path_pm1 = "/home1/pm1/"; 
 String path_pm25 = "/home1/pm25/"; 
@@ -64,7 +78,6 @@ String path_pm10 = "/home1/pm10/";
 String path_co = "/home1/co/"; 
 String path_time = "/home1/time/";
 String path_dust = "/home1/dust/";
-int dust_ng = 0;
 int co_ng = 0;
 int pm1_ng = 0;
 int pm10_ng = 0;
@@ -73,14 +86,15 @@ int ppm_CO = 0;
 
 void setup()
 {
+  //setup dau ra dau vao
   pinMode(23,INPUT);
-  pinMode(14,OUTPUT);
+  pinMode(14,OUTPUT);   //chân nối với cực âm của còi báo
   digitalWrite(14, 1);
   pinMode(34, INPUT);
   pinMode(35, INPUT);
   Serial.begin(115200);
   Serial2.begin(9600);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD); 
   Serial.print("Connecting to Wi-Fi");
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -94,17 +108,19 @@ void setup()
   
   Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
   Firebase.reconnectWiFi(true);
+  initTemp();
   lcd.setContrast(40);
   lcd.clear(); // xoa lcd
   lcd.setCursor(2,0); // set vi tri hien thi
   lcd.print("Giam sat");
   lcd.setCursor(2,2); // set vi tri hien thi
   lcd.print("moi truong");
+//  pinMode(26, INPUT);
   starttime = millis();   
 }
-
+// cam bien 
 void PMSA003(){
-  digitalWrite(14, 0);
+//  digitalWrite(14, 0);
    if(Serial2.find(0x42)){    //start to read when detect 0x42
     Serial2.readBytes(buf,LENG);
 
@@ -140,7 +156,7 @@ static unsigned long OledTimer=millis(); // set up thoi gian tinhs toan du lieu
     int count = count_pm + 1;   
     check_up_data_PMSA003 = 0;
     Firebase.setInt(fbdo,"/home1/count_pm", count); 
-    digitalWrite(14, 1);
+//    digitalWrite(14, 1);
     lcd.setCursor(0,0);
     lcd.print("PM01: ");
     lcd.setCursor(33,0);
@@ -161,47 +177,7 @@ static unsigned long OledTimer=millis(); // set up thoi gian tinhs toan du lieu
   }
 }
 
-void DSM501A(){
-  duration = pulseIn(pin, LOW);
-  lowpulseoccupancy += duration;
-  endtime = millis();
-  if ((endtime-starttime) > sampletime_ms)
-  {
-    ratio = (lowpulseoccupancy-endtime+starttime + sampletime_ms)/(sampletime_ms*10.0);  // Integer percentage 0=>100
-    concentration = 1.1*pow(ratio,3)-3.8*pow(ratio,2)+520*ratio+0.62; // using spec sheet curve
-    if(concentration > 2000){
-      concentration = 233;
-    }
-    Serial.print("lowpulseoccupancy:");
-    Serial.print(lowpulseoccupancy);
-    Serial.print("    ratio:");
-    Serial.print(ratio);
-    Serial.print("DSM501A:");
-    Serial.println(concentration);
-    
-    lcd.setCursor(0,3);
-    lcd.print("DSM501A: ");  
-    lcd.setCursor(40,3);
-    lcd.clear(3, 45, 51);
-    lcd.print(concentration);
-
-    if (Firebase.getInt(fbdo, "/home1/count_dust")) {
-          count_dust = fbdo.intData();
-    }
-    int count_dust_1 = count_dust+1;
-    Firebase.setFloat(fbdo,path_dust+count_dust,concentration);  
-    Firebase.setFloat(fbdo,"/home1/count_dust",count_dust_1);  
-    check_up_data_DSM501A = 0;   
-//    Firebase.setFloat(fbdo,"/DSM501A",concentration);
-    lowpulseoccupancy = 0;
-    starttime = millis();
-  } 
-}
-
 void warning(){
-   if (Firebase.getInt(fbdo, "/home1/dust_ng")) {
-      dust_ng = fbdo.intData();
-    }
     if (Firebase.getInt(fbdo, "/home1/co_ng")) {
       co_ng = fbdo.intData();
     }
@@ -214,7 +190,6 @@ void warning(){
     if (Firebase.getInt(fbdo, "/home1/pm25_ng")) {
       pm25_ng = fbdo.intData();
     }
-    Serial.println(dust_ng);
 }
 
 void CO(){
@@ -236,7 +211,8 @@ void CO(){
 
 void loop()
 {  
-  dateTime = NTPch.getNTPtime(7.0, 0);
+  getTemperature();
+  dateTime = NTPch.getNTPtime(7.0, 0);  //Múi giờ VN 7 UTC
   if(dateTime.valid){
     NTPch.printDateTime(dateTime);
     int actualHour = dateTime.hour;
@@ -265,11 +241,10 @@ void loop()
     Firebase.setFloat(fbdo,"/home1/count_time",count_time_1);     
     // 1 cách fix là check điều kiện cho từng hàm check_func = 0
     check_up_data_PMSA003 = 1;
-    check_up_data_DSM501A = 1;
-    PMSA003();   
-    DSM501A();
+    PMSA003();    
     CO();      
-    if( concentration > dust_ng || PM01Value > pm1_ng || PM2_5Value > pm25_ng || PM10Value > pm10_ng || ppm_CO > co_ng){      
+    if( PM01Value > pm1_ng || PM2_5Value > pm25_ng || PM10Value > pm10_ng || ppm_CO > co_ng){      
+      //tạm dừng
       for(int i=0; i < 2000; i++){
         digitalWrite(14, 0);
         Serial.println("buzz");
@@ -283,11 +258,7 @@ void loop()
  }
  if(check_up_data_PMSA003 == 1){
     PMSA003();    
- }
- if(check_up_data_PMSA003 == 1){
-    DSM501A();    
- }
- 
+ } 
 }
 
 char checkValue(unsigned char *thebuf, char leng)  //ham check
@@ -326,4 +297,22 @@ int transmitPM10(unsigned char *thebuf)
   int PM10Val;
   PM10Val=((thebuf[7]<<8)+thebuf[8]);  //count PM10 value of the air detector module
   return PM10Val;
+}
+bool initTemp() {
+  byte resultValue = 0;
+  dht.setup(dhtPin, DHTesp::DHT11);
+  Serial.println("DHT initiated");
+  return true;
+}
+
+bool getTemperature() {
+
+  TempAndHumidity newValues = dht.getTempAndHumidity();
+
+  float heatIndex = dht.computeHeatIndex(newValues.temperature, newValues.humidity);
+  float dewPoint = dht.computeDewPoint(newValues.temperature, newValues.humidity);
+  float cr = dht.getComfortRatio(cf, newValues.temperature, newValues.humidity);
+  Firebase.setInt(fbdo,"/temp",newValues.temperature);
+  Firebase.setInt(fbdo,"/humi",newValues.humidity);
+  return true;
 }
